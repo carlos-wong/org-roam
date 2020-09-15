@@ -35,6 +35,11 @@
 ;;;; Dependencies
 
 (require 'ol)
+(require 'org-roam-compat)
+
+(declare-function  org-roam--find-file                  "org-roam")
+(declare-function  org-roam-find-file                   "org-roam")
+
 
 (defcustom org-roam-link-auto-replace t
   "When non-nil, replace Org-roam's roam links with file or id links whenever possible."
@@ -199,7 +204,7 @@ marker is a marker to the headline, if applicable."
       (unless (org-in-regexp org-link-bracket-re 1)
         (user-error "No link at point"))
       (replace-match "")
-      (insert (org-link-make-string (concat link-type ":" loc) desc)))))
+      (insert (org-roam-link-make-string (concat link-type ":" loc) desc)))))
 
 (defun org-roam-link-replace-all ()
   "Replace all roam links in the current buffer."
@@ -243,7 +248,7 @@ marker is a marker to the headline, if applicable."
                          (setq collection (apply-partially #'org-roam-link--get-headlines file))
                          (setq start (+ start star-idx 1))))
                       ('title
-                       (setq collection #'org-roam--get-titles))
+                       (setq collection #'org-roam-link--get-titles))
                       ('headline
                        (setq collection #'org-roam-link--get-headlines)
                        (setq start (+ start star-idx 1))))))))))
@@ -259,3 +264,4 @@ marker is a marker to the headline, if applicable."
               :exit-function exit-fn)))))
 
 (provide 'org-roam-link)
+;;; org-roam-link.el ends here
