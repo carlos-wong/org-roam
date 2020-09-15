@@ -63,6 +63,7 @@
 (require 'org-roam-db)
 (require 'org-roam-doctor)
 (require 'org-roam-graph)
+(require 'org-roam-link)
 
 ;;;; Declarations
 ;; From org-ref-core.el
@@ -1511,9 +1512,9 @@ during the next idle slot."
     (run-hooks 'org-roam-file-setup-hook) ; Run user hooks
     (org-roam--setup-title-auto-update)
     (add-hook 'post-command-hook #'org-roam-buffer--update-maybe nil t)
-    (add-hook 'before-save-hook #'org-roam--replace-fuzzy-link-on-save nil t)
+    (add-hook 'before-save-hook #'org-roam-link--replace-link-on-save nil t)
     (add-hook 'after-save-hook #'org-roam--queue-file-for-update nil t)
-    (add-hook 'completion-at-point-functions #'org-roam-complete-at-point nil t)
+    (add-hook 'completion-at-point-functions #'org-roam-link-complete-at-point nil t)
     (org-roam-buffer--update-maybe :redisplay t)))
 
 (defun org-roam--delete-file-advice (file &optional _trash)
@@ -1739,7 +1740,7 @@ M-x info for more information at Org-roam > Installation > Post-Installation Tas
     (dolist (buf (org-roam--get-roam-buffers))
       (with-current-buffer buf
         (remove-hook 'post-command-hook #'org-roam-buffer--update-maybe t)
-        (remove-hook 'before-save-hook #'org-roam--replace-fuzzy-link-on-save t)
+        (remove-hook 'before-save-hook #'org-roam-link--replace-link-on-save t)
         (remove-hook 'after-save-hook #'org-roam--queue-file-for-update t))))))
 
 ;;; Interactive Commands

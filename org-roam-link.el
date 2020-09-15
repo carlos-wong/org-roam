@@ -124,3 +124,61 @@ marker is a marker to the headline, if applicable."
              (org-roam-find-file desc nil nil t)))
           ("id"
            (org-goto-marker-or-bmk mkr)))))
+
+(defun org-roam-link-replace-all ()
+  "Replace all roam links in the current buffer."
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward org-link-bracket-re nil t)
+      (let ((context (org-element-context)))
+          (pcase (org-element-lineage context '(link) t)
+            (`nil nil)
+            (link
+             (when (string-equal "roam" (org-element-property :type link))
+               (pcase-let ((`(,link-type ,loc ,desc _) (org-roam-link--get-location (org-element-property :path link))))
+                 (when (and link-type loc)
+                   (org-roam-link--roam-to-file-link link-type loc desc))))))))))
+
+(defun org-roam-link--replace-link-on-save ()
+  "Hook to replace all roam links on save."
+  (when org-roam-link-auto-replace
+    (org-roam-link-replace-all)))
+
+(defun org-roam-link-complete-at-point ()
+  "Do appropriate completion for the link at point."
+  (let ((end (point))
+        (start (point))
+        (exit-fn (lambda (&rest _) nil))
+        collection)
+    (when (org-in-regexp org-link-bracket-re 1)
+      (setq start (+ (match-beginning 1) (length "roam:"))
+            end (match-end 1))
+      (let ((context (org-element-context)))
+        (pcase (org-element-lineage context '(link) t)
+          (`nil nil)
+          (link (when (string-equal "roam" (org-element-property :type link))
+                  (pcase-let ((`(,type ,title _ ,star-idx)
+                               (org-roam-link--split-path (org-element-property :path link))))
+                    (pcase type
+                      ('title+headline
+                       (when-let ((file (org-roam--get-file-from-title title t)))
+                         (setq collection (apply-partially #'org-roam--get-headlines file))
+                         (setq start (+ start star-idx 1))))
+                      ('title
+                       (setq collection #'org-roam--get-titles))
+                      ('headline
+                       (setq collection #'org-roam--get-headlines)
+                       (setq start (+ start star-idx 1))))))))))
+    (when collection
+      (let ((prefix (buffer-substring-no-properties start end)))
+        (list start end
+              (if (functionp collection)
+                  (completion-table-dynamic
+                   (lambda (_)
+                     (cl-remove-if (apply-partially #'string= prefix)
+                                   (funcall collection))))
+                collection)
+              :exit-function exit-fn)))))
+
+(provide 'org-roam-link)
