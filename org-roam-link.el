@@ -41,10 +41,98 @@
   :group 'org-roam
   :type 'boolean)
 
-;; Install the custom link type
+;;; the roam: link
 (org-link-set-parameters "roam"
                          :follow #'org-roam-link-follow-link)
 
+(defun org-roam-link-follow-link (path)
+  "Navigates to location specified by PATH."
+  (pcase-let ((`(,link-type ,loc ,desc ,mkr) (org-roam-link--get-location path)))
+    (when (and org-roam-link-auto-replace loc desc)
+      (org-roam-link--roam-to-file-link link-type loc desc))
+    (pcase link-type
+          ("file"
+           (if loc
+               (org-roam--find-file loc)
+             (org-roam-find-file desc nil nil t)))
+          ("id"
+           (org-goto-marker-or-bmk mkr)))))
+
+;;; Retrieval Functions
+(defun org-roam-link--get-titles ()
+  "Return all titles within Org-roam."
+  (mapcar #'car (org-roam-db-query [:select [titles:title] :from titles])))
+
+(defun org-roam-link--get-headlines (&optional file with-marker use-stack)
+  "Return all outline headings for the current buffer.
+If FILE, return outline headings for passed FILE instead.
+If WITH-MARKER, return a cons cell of (headline . marker).
+If USE-STACK, include the parent paths as well."
+  (let* ((buf (or (and file
+                       (or (find-buffer-visiting file)
+                           (find-file-noselect file)))
+                  (current-buffer)))
+         (outline-level-fn outline-level)
+         (path-separator "/")
+         (stack-level 0)
+         stack cands name level marker)
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward org-complex-heading-regexp nil t)
+          (save-excursion
+            (setq name (substring-no-properties (or (match-string 4) "")))
+            (setq marker (point-marker))
+            (when use-stack
+              (goto-char (match-beginning 0))
+              (setq level (funcall outline-level-fn))
+              ;; Update stack.  The empty entry guards against incorrect
+              ;; headline hierarchies, e.g. a level 3 headline
+              ;; immediately following a level 1 entry.
+              (while (<= level stack-level)
+                (pop stack)
+                (cl-decf stack-level))
+              (while (> level stack-level)
+                (push name stack)
+                (cl-incf stack-level))
+              (setq name (mapconcat #'identity
+                                    (reverse stack)
+                                    path-separator)))
+            (push (if with-marker
+                      (cons name marker)
+                    name) cands)))))
+    (nreverse cands)))
+
+(defun org-roam-link--get-file-from-title (title &optional no-interactive)
+  "Return the file path corresponding to TITLE.
+When NO-INTERACTIVE, return nil if there are multiple options."
+  (let ((files (mapcar #'car (org-roam-db-query [:select [titles:file] :from titles
+                                                 :where (= titles:title $v1)]
+                                                (vector title)))))
+    (pcase files
+      ('nil nil)
+      (`(,file) file)
+      (_
+       (unless no-interactive
+         (completing-read "Select file: " files))))))
+
+(defun org-roam-link--get-id-from-headline (headline &optional file)
+  "Return (marker . id) correspondng to HEADLINE.
+If FILE, get headline from FILE instead.
+If there is no corresponding headline, return nil."
+  (save-excursion
+    (with-current-buffer (or (and file
+                                  (or (find-buffer-visiting file)
+                                      (find-file-noselect file)))
+                             (current-buffer))
+      (let ((headlines (org-roam-link--get-headlines file 'with-markers)))
+        (when-let ((marker (cdr (assoc-string headline headlines))))
+          (goto-char marker)
+          (cons marker
+                (when org-roam-link-auto-replace
+                  (org-id-get-create))))))))
+
+;;; Path-related functions
 (defun org-roam-link--split-path (path)
   "Splits PATH into title and headline.
 Return a list of the form (type title has-headline-p headline star-idx).
@@ -77,10 +165,10 @@ marker is a marker to the headline, if applicable."
     (pcase-let ((`(,type ,title ,headline _) (org-roam-link--split-path link)))
       (pcase type
         ('title+headline
-         (let ((file (org-roam--get-file-from-title title)))
+         (let ((file (org-roam-link--get-file-from-title title)))
            (if (not file)
                (org-roam-message "Cannot find matching file")
-             (setq mkr (org-roam--get-id-from-headline headline file))
+             (setq mkr (org-roam-link--get-id-from-headline headline file))
              (pcase mkr
                (`(,marker . ,target-id)
                 (setq mkr marker
@@ -89,12 +177,12 @@ marker is a marker to the headline, if applicable."
                       desc headline))
                (_ (org-roam-message "cannot find matching id"))))))
         ('title
-         (setq loc (org-roam--get-file-from-title title)
+         (setq loc (org-roam-link--get-file-from-title title)
                desc title
                link-type "file")
          (when loc (setq loc (file-relative-name loc))))
         ('headline
-         (setq mkr (org-roam--get-id-from-headline headline))
+         (setq mkr (org-roam-link--get-id-from-headline headline))
          (pcase mkr
            (`(,marker . ,target-id)
             (setq mkr marker
@@ -104,6 +192,7 @@ marker is a marker to the headline, if applicable."
            (_ (org-roam-message "Cannot find matching headline")))))
       (list link-type loc desc mkr))))
 
+;;; Conversion Functions
 (defun org-roam-link--roam-to-file-link (link-type loc desc)
   (save-excursion
     (save-match-data
@@ -111,19 +200,6 @@ marker is a marker to the headline, if applicable."
         (user-error "No link at point"))
       (replace-match "")
       (insert (org-link-make-string (concat link-type ":" loc) desc)))))
-
-(defun org-roam-link-follow-link (path)
-  "Navigates to location specified by PATH."
-  (pcase-let ((`(,link-type ,loc ,desc ,mkr) (org-roam-link--get-location path)))
-    (when (and org-roam-link-auto-replace loc desc)
-      (org-roam-link--roam-to-file-link link-type loc desc))
-    (pcase link-type
-          ("file"
-           (if loc
-               (org-roam--find-file loc)
-             (org-roam-find-file desc nil nil t)))
-          ("id"
-           (org-goto-marker-or-bmk mkr)))))
 
 (defun org-roam-link-replace-all ()
   "Replace all roam links in the current buffer."
@@ -145,6 +221,7 @@ marker is a marker to the headline, if applicable."
   (when org-roam-link-auto-replace
     (org-roam-link-replace-all)))
 
+;;; Completion
 (defun org-roam-link-complete-at-point ()
   "Do appropriate completion for the link at point."
   (let ((end (point))
@@ -162,13 +239,13 @@ marker is a marker to the headline, if applicable."
                                (org-roam-link--split-path (org-element-property :path link))))
                     (pcase type
                       ('title+headline
-                       (when-let ((file (org-roam--get-file-from-title title t)))
-                         (setq collection (apply-partially #'org-roam--get-headlines file))
+                       (when-let ((file (org-roam-link--get-file-from-title title t)))
+                         (setq collection (apply-partially #'org-roam-link--get-headlines file))
                          (setq start (+ start star-idx 1))))
                       ('title
                        (setq collection #'org-roam--get-titles))
                       ('headline
-                       (setq collection #'org-roam--get-headlines)
+                       (setq collection #'org-roam-link--get-headlines)
                        (setq start (+ start star-idx 1))))))))))
     (when collection
       (let ((prefix (buffer-substring-no-properties start end)))
