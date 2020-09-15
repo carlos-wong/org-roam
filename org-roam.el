@@ -273,6 +273,9 @@ The currently supported symbols are:
   :type 'boolean
   :group 'org-roam)
 
+(defvar org-roam-completion-functions nil
+  "List of functions to be used with `completion-at-point' for Org-roam.")
+
 ;;;; Dynamic variables
 (defvar org-roam-last-window nil
   "Last window `org-roam' was called from.")
@@ -1139,15 +1142,14 @@ This function hooks into `org-open-at-point' via
   :group 'org-roam
   :type 'boolean)
 
-(defun org-roam-complete-at-point ()
-  "Do appropriate completion for the thing at point."
+;;;; Tags completion
+(defun org-roam-complete-tags-at-point ()
+  "`completion-at-point' function for Org-roam tags."
   (let ((end (point))
         (start (point))
         (exit-fn (lambda (&rest _) nil))
         collection)
-    (cond
-     (;; completing roam_tags
-      (looking-back "^#\\+roam_tags:.*" (line-beginning-position))
+    (when (looking-back "^#\\+roam_tags:.*" (line-beginning-position))
       (when (looking-at "\\>")
         (setq start (save-excursion (skip-syntax-backward "w")
                                     (point))
@@ -1156,41 +1158,6 @@ This function hooks into `org-open-at-point' via
             exit-fn (lambda (str _status)
                       (delete-char (- (length str)))
                       (insert "\"" str "\""))))
-     (;; Completions for fuzzy links
-      org-roam-enable-fuzzy-links
-      (cond
-       (;; In a fuzzy link
-        (and (org-roam--fuzzy-link-p))
-        (org-in-regexp org-link-any-re 1) ; org-roam--fuzzy-link-p guarantees this is true
-        (setq start (match-beginning 2)
-              end (match-end 2))
-        (pcase-let ((`(,type ,title _ ,star-idx)
-                     (org-roam--split-fuzzy-link (match-string-no-properties 2))))
-          (pcase type
-            ('title+headline
-             (when-let ((file (org-roam--get-file-from-title title t)))
-               (setq collection (apply-partially #'org-roam--get-headlines file))
-               (setq start (+ start star-idx 1))))
-            ('title
-             (setq collection #'org-roam--get-titles))
-            ('headline
-             (setq collection #'org-roam--get-headlines)
-             (setq start (+ start star-idx 1))))))
-       (;; At a plain "[[|]]"
-        (org-in-regexp (rx "[[]]"))
-        (setq start (+ (match-beginning 0) 2)
-              end (+ (match-beginning 0) 2)
-              collection #'org-roam--get-titles))))
-     (;; Completions everywhere
-      (and org-roam-completion-everywhere
-           (thing-at-point 'word))
-      (let ((bounds (bounds-of-thing-at-point 'word)))
-        (setq start (car bounds)
-              end (cdr bounds)
-              collection #'org-roam--get-titles
-              exit-fn (lambda (str _status)
-                        (delete-char (- (length str)))
-                        (insert "[[" str "]]"))))))
     (when collection
       (let ((prefix (buffer-substring-no-properties start end)))
         (list start end
@@ -1201,6 +1168,37 @@ This function hooks into `org-open-at-point' via
                                    (funcall collection))))
                 collection)
               :exit-function exit-fn)))))
+
+(defun org-roam-complete-everywhere ()
+  "`completion-at-point' function for word at point.
+This is active when `org-roam-completion-everywhere' is non-nil."
+  (let ((end (point))
+        (start (point))
+        (exit-fn (lambda (&rest _) nil))
+        collection)
+    (when (and org-roam-completion-everywhere
+               (thing-at-point 'word))
+      (let ((bounds (bounds-of-thing-at-point 'word)))
+        (setq start (car bounds)
+              end (cdr bounds)
+              collection #'org-roam--get-titles
+              exit-fn (lambda (str _status)
+                        (delete-char (- (length str)))
+                        (insert "[[" str "]]")))))
+    (when collection
+      (let ((prefix (buffer-substring-no-properties start end)))
+        (list start end
+              (if (functionp collection)
+                  (completion-table-dynamic
+                   (lambda (_)
+                     (cl-remove-if (apply-partially #'string= prefix)
+                                   (funcall collection))))
+                collection)
+              :exit-function exit-fn)))))
+
+(add-to-list 'org-roam-completion-functions #'org-roam-complete-tags-at-point)
+(add-to-list 'org-roam-completion-functions #'org-roam-complete-everywhere)
+(add-to-list 'org-roam-completion-functions #'org-roam-link-complete-at-point)
 
 ;;; Fuzzy Links
 (defcustom org-roam-enable-fuzzy-links t
@@ -1514,7 +1512,8 @@ during the next idle slot."
     (add-hook 'post-command-hook #'org-roam-buffer--update-maybe nil t)
     (add-hook 'before-save-hook #'org-roam-link--replace-link-on-save nil t)
     (add-hook 'after-save-hook #'org-roam--queue-file-for-update nil t)
-    (add-hook 'completion-at-point-functions #'org-roam-link-complete-at-point nil t)
+    (dolist (fn org-roam-completion-functions)
+      (add-hook 'completion-at-point-functions fn nil t))
     (org-roam-buffer--update-maybe :redisplay t)))
 
 (defun org-roam--delete-file-advice (file &optional _trash)
